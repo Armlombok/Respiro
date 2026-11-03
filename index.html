@@ -149,6 +149,15 @@ button, input { font: inherit; color: inherit; }
 .calc { grid-column: 2; grid-row: 1 / span 2; }
 .pair { grid-column: 1; grid-row: 2; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .table-panel { grid-column: 1 / -1; }
+.download { border: 1px solid var(--line); border-radius: 8px; background: var(--bg); padding: 14px 16px; margin-bottom: 14px; }
+.download h3 { font-size: 1rem; margin: 0 0 10px; }
+.dl-grid { display: flex; flex-wrap: wrap; gap: 14px 40px; align-items: flex-end; }
+.dl-label { font-size: 0.9rem; color: var(--muted); margin-bottom: 6px; }
+.dl-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 10px; }
+.dl-row label.field input { background: var(--surface); }
+.dl-status { margin-top: 10px; min-height: 1.4em; }
+.dl-status[data-state="error"] { color: var(--bad); }
+.dl-status[data-state="ok"] { color: var(--ok); }
 .panel-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 16px; margin-bottom: 10px; }
 .hint { color: var(--muted); font-size: 0.93rem; }
 .chart-box { position: relative; height: 220px; }
@@ -322,10 +331,29 @@ table.data tbody tr:hover { background: var(--bg); }
     <section class="panel table-panel">
       <div class="panel-head">
         <h2>Data</h2>
-        <div class="btn-row">
-          <button type="button" class="btn" id="dlView">Unduh data tampilan (CSV)</button>
-          <button type="button" class="btn" id="dlSel" disabled>Unduh rentang terpilih (CSV)</button>
+      </div>
+
+      <div class="download" aria-labelledby="dlTitle">
+        <h3 id="dlTitle">Unduh CSV</h3>
+        <div class="dl-grid">
+          <div class="dl-block">
+            <p class="dl-label">Berdasarkan tanggal</p>
+            <div class="dl-row">
+              <label class="field">Dari tanggal <input type="date" id="dlFrom"></label>
+              <label class="field">Sampai tanggal <input type="date" id="dlTo"></label>
+              <button type="button" class="btn primary" id="dlRange">Unduh rentang tanggal</button>
+            </div>
+          </div>
+          <div class="dl-block">
+            <p class="dl-label">Pintasan</p>
+            <div class="btn-row">
+              <button type="button" class="btn" id="dlAll">Unduh semua data</button>
+              <button type="button" class="btn" id="dlView">Data tampilan</button>
+              <button type="button" class="btn" id="dlSel" disabled>Rentang perhitungan</button>
+            </div>
+          </div>
         </div>
+        <p class="note dl-status" id="dlStatus" role="status" aria-live="polite"></p>
       </div>
       <p class="note" id="tableNote" style="margin-bottom:8px"></p>
       <div class="table-scroll">
@@ -359,7 +387,8 @@ const CONFIG = {
   STALE_MS: 90000,      // data dianggap terlambat jika lebih lama dari ini
   GAP_MS: 90000,        // jeda antar-data yang ditampilkan sebagai putus garis
   MAX_POINTS: 2000,     // titik maksimum per garis di grafik (data asli tetap dipakai untuk perhitungan)
-  TABLE_ROWS: 200       // jumlah baris terbaru di tabel
+  TABLE_ROWS: 200,      // jumlah baris terbaru di tabel
+  PAGE_ROWS: 20000      // baris per permintaan saat mengunduh CSV
 };
 const DEMO = !CONFIG.API_URL || new URLSearchParams(location.search).has("demo");
 const HOUR = 3600e3;
@@ -532,7 +561,15 @@ function demoApi(p) {
     const s = p.start ?? -Infinity, e = p.end ?? Infinity;
     rows = demoRows.filter((r) => r.t >= s && r.t <= e);
   }
-  return new Promise((ok) => setTimeout(() => ok({ ok: true, rows: rows.map((r) => [r.t, r.co2, r.o2, r.temp, r.rh]) }), 150));
+  const out = { ok: true };
+  if (p.limit && p.latest == null && p.since == null) {
+    out.paged = true;
+    out.hasMore = rows.length > p.limit;
+    if (out.hasMore) out.nextStart = rows[p.limit].t;
+    rows = rows.slice(0, p.limit);
+  }
+  out.rows = rows.map((r) => [r.t, r.co2, r.o2, r.temp, r.rh]);
+  return new Promise((ok) => setTimeout(() => ok(out), 150));
 }
 
 // ================= Grafik =================
@@ -851,7 +888,7 @@ function onSelectionChanged() {
     $("selStart").value = "";
     $("selEnd").value = "";
   }
-  $("dlSel").disabled = !state.sel;
+  $("dlSel").disabled = downloading || !state.sel;
   state.calc = compute();
   renderResults();
   renderCharts();
@@ -989,14 +1026,80 @@ $("selClear").addEventListener("click", () => { state.sel = null; onSelectionCha
 for (const id of ["pVc", "pVs", "pM", "pP"]) {
   $(id).addEventListener("input", () => { saveParams(); renderFreeVol(); state.calc = compute(); renderResults(); });
 }
+// ================= Unduh CSV =================
+let downloading = false;
+function setDlStatus(text, st = "") {
+  const el = $("dlStatus");
+  el.textContent = text;
+  if (st) el.dataset.state = st; else delete el.dataset.state;
+}
+function setDlBusy(busy) {
+  downloading = busy;
+  for (const id of ["dlRange", "dlAll", "dlView"]) $(id).disabled = busy;
+  $("dlSel").disabled = busy || !state.sel;
+}
+// Ambil data langsung dari Sheet secara bertahap, terlepas dari rentang tampilan grafik.
+async function fetchRange(start, end) {
+  const rows = [];
+  let from = start, warn = "";
+  for (let page = 0; page < 1000; page++) {
+    const d = await api({ start: from, end, limit: CONFIG.PAGE_ROWS });
+    const add = toRows(d.rows);
+    for (const r of add) rows.push(r);
+    setDlStatus(`Mengambil data… ${fmt(rows.length, 0)} baris`);
+    if (!d.paged) {   // Apps Script versi lama tanpa dukungan halaman
+      if (d.truncated) warn = " Apps Script belum mendukung unduhan bertahap, jadi hanya 50.000 baris terakhir yang terunduh. Perbarui Code.gs dan deploy versi baru.";
+      break;
+    }
+    if (!d.hasMore || !add.length || !(d.nextStart > from)) break;
+    from = d.nextStart;
+  }
+  return { rows, warn };
+}
+async function downloadFromSheet(start, end, name) {
+  if (downloading) return;
+  setDlBusy(true);
+  setDlStatus("Mengambil data…");
+  try {
+    const { rows, warn } = await fetchRange(start, end);
+    if (!rows.length) { setDlStatus("Tidak ada data pada rentang tanggal ini.", "error"); return; }
+    downloadCSV(rows, name);
+    setDlStatus(`Selesai: ${fmt(rows.length, 0)} baris, ${localStamp(rows[0].t)} sampai ${localStamp(rows[rows.length - 1].t)}.${warn}`, warn ? "error" : "ok");
+  } catch (e) {
+    setDlStatus(`Unduhan gagal. ${e.message}`, "error");
+  } finally {
+    setDlBusy(false);
+  }
+}
+const dateStamp = (t) => localStamp(t).slice(0, 10).replace(/-/g, "");
+function dateInput(t) { return localStamp(t).slice(0, 10); }
+function initDlDates() {
+  const now = Date.now();
+  $("dlTo").value = dateInput(now);
+  $("dlFrom").value = dateInput(now - 6 * 24 * HOUR);
+}
+$("dlRange").addEventListener("click", () => {
+  const f = $("dlFrom").value, t = $("dlTo").value;
+  if (!f || !t) { setDlStatus("Isi tanggal Dari dan Sampai terlebih dahulu.", "error"); return; }
+  const start = new Date(`${f}T00:00:00`).getTime();
+  const end = new Date(`${t}T23:59:59.999`).getTime();
+  if (!(end > start)) { setDlStatus("Tanggal Sampai tidak boleh sebelum tanggal Dari.", "error"); return; }
+  downloadFromSheet(start, end, `respirometer_${dateStamp(start)}_${dateStamp(end)}.csv`);
+});
+$("dlAll").addEventListener("click", () => {
+  downloadFromSheet(null, null, `respirometer_semua-data_${fileStamp(Date.now())}.csv`);
+});
 $("dlView").addEventListener("click", () => {
-  if (!state.rows.length) return;
+  if (!state.rows.length) { setDlStatus("Tidak ada data pada rentang tampilan.", "error"); return; }
   downloadCSV(state.rows, `respirometer_${fileStamp(state.rows[0].t)}_${fileStamp(state.rows[state.rows.length - 1].t)}.csv`);
+  setDlStatus(`Selesai: ${fmt(state.rows.length, 0)} baris dari rentang tampilan grafik.`, "ok");
 });
 $("dlSel").addEventListener("click", () => {
   if (!state.sel) return;
   const rows = state.rows.filter((r) => r.t >= state.sel.start && r.t <= state.sel.end);
-  if (rows.length) downloadCSV(rows, `respirometer_pilihan_${fileStamp(state.sel.start)}_${fileStamp(state.sel.end)}.csv`);
+  if (!rows.length) { setDlStatus("Tidak ada data pada rentang perhitungan.", "error"); return; }
+  downloadCSV(rows, `respirometer_pilihan_${fileStamp(state.sel.start)}_${fileStamp(state.sel.end)}.csv`);
+  setDlStatus(`Selesai: ${fmt(rows.length, 0)} baris dari rentang perhitungan respirasi.`, "ok");
 });
 // ================= Tema =================
 const THEME_KEY = "respirometer.theme";
@@ -1028,6 +1131,7 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) refr
 $("demoBanner").hidden = !DEMO;
 $("refreshSec").textContent = String(Math.round(CONFIG.REFRESH_MS / 1000));
 markThemeButtons();
+initDlDates();
 loadParams();
 renderFreeVol();
 createCharts();
