@@ -435,7 +435,7 @@ const CONFIG = {
   GAP_MS: 90000,        // jeda antar-data yang ditampilkan sebagai putus garis
   MAX_POINTS: 2000,     // titik maksimum per garis di grafik (data asli tetap dipakai untuk perhitungan)
   TABLE_ROWS: 200,      // jumlah baris terbaru di tabel
-  PAGE_ROWS: 20000      // baris per permintaan saat mengunduh CSV
+  PAGE_ROWS: 5000       // baris per permintaan saat mengunduh CSV (semua kolom sheet)
 };
 const DEMO = !CONFIG.API_URL || new URLSearchParams(location.search).has("demo");
 const HOUR = 3600e3;
@@ -691,9 +691,17 @@ function demoApi(p) {
   const out = { ok: true };
   if (p.limit && p.latest == null && p.since == null) {
     out.paged = true;
+    const off = p.offset || 0;
+    rows = rows.slice(off);
     out.hasMore = rows.length > p.limit;
-    if (out.hasMore) out.nextStart = rows[p.limit].t;
+    if (out.hasMore) { out.nextStart = rows[p.limit].t; out.nextOffset = off + p.limit; }
     rows = rows.slice(0, p.limit);
+    if (p.full) {
+      out.full = true;
+      out.headers = ["Timestamp", "CO2", "O2", "RH", "Suhu", "Label", "Sample ID", "CO2 Raw ppm", "O2 Raw", "SHT Valid"];
+      out.rows = rows.map((r, i) => [r.t, r.co2, r.o2, r.rh, r.temp, sessionAt(r.t)?.label || "", Math.round(r.t / 15000) % 100000, r.co2 + 12.5, r.o2 + 0.031, 1]);
+      return new Promise((ok) => setTimeout(() => ok(out), 150));
+    }
   }
   out.rows = rows.map((r) => [r.t, r.co2, r.o2, r.temp, r.rh]);
   return new Promise((ok) => setTimeout(() => ok(out), 150));
@@ -1171,6 +1179,32 @@ function downloadCSV(rows, name) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
+// CSV lengkap: semua kolom Google Sheets apa adanya, ditambah Label_Sesi dari tab Sesi.
+function downloadFullCSV(headers, rows, name) {
+  const cell = (v) => {
+    if (v === null || v === undefined) return "";
+    const t = String(v);
+    return /[",\r\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+  };
+  const lines = [headers.map(cell).concat("Label_Sesi").join(",")];
+  for (const r of rows) {
+    const out = new Array(headers.length);
+    for (let i = 0; i < headers.length; i++) out[i] = i === 0 ? localStamp(r[0]) : cell(r[i]);
+    out.push(cell(sessionAt(r[0])?.label || ""));
+    lines.push(out.join(","));
+  }
+  saveBlob(lines.join("\r\n"), name);
+}
+function saveBlob(text, name) {
+  const blob = new Blob(["\ufeff" + text], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
 const fileStamp = (t) => localStamp(t).replace(/[-:]/g, "").replace(" ", "-").slice(0, 13);
 
 // ================= Parameter tersimpan =================
@@ -1314,30 +1348,36 @@ function setDlBusy(busy) {
 // Ambil data langsung dari Sheet secara bertahap, terlepas dari rentang tampilan grafik.
 async function fetchRange(start, end) {
   const rows = [];
-  let from = start, warn = "";
-  for (let page = 0; page < 1000; page++) {
-    const d = await api({ start: from, end, limit: CONFIG.PAGE_ROWS });
-    const add = toRows(d.rows);
+  let from = start, offset = null, warn = "", headers = null;
+  for (let page = 0; page < 5000; page++) {
+    const d = await api({ start: offset != null ? start : from, end, limit: CONFIG.PAGE_ROWS, full: "1", offset });
+    if (page === 0 && d.full && Array.isArray(d.headers)) headers = d.headers;
+    const add = headers ? (d.rows || []) : toRows(d.rows);
     for (const r of add) rows.push(r);
     setDlStatus(`Mengambil data… ${fmt(rows.length, 0)} baris`);
     if (!d.paged) {   // Apps Script versi lama tanpa dukungan halaman
       if (d.truncated) warn = " Apps Script belum mendukung unduhan bertahap, jadi hanya 50.000 baris terakhir yang terunduh. Perbarui Code.gs dan deploy versi baru.";
       break;
     }
-    if (!d.hasMore || !add.length || !(d.nextStart > from)) break;
+    if (!d.hasMore || !add.length) break;
+    if (d.nextOffset != null) { offset = d.nextOffset; continue; }  // halaman berdasarkan posisi baris (tepat)
+    if (!(d.nextStart > from)) break;                                // Apps Script lama: berdasarkan waktu
     from = d.nextStart;
   }
-  return { rows, warn };
+  if (!headers && rows.length) warn += " Apps Script belum mengirim semua kolom, jadi CSV hanya berisi kolom utama. Perbarui Code.gs dan deploy versi baru.";
+  return { rows, headers, warn };
 }
 async function downloadFromSheet(start, end, name) {
   if (downloading) return;
   setDlBusy(true);
   setDlStatus("Mengambil data…");
   try {
-    const { rows, warn } = await fetchRange(start, end);
-    if (!rows.length) { setDlStatus("Tidak ada data pada rentang tanggal ini.", "error"); return; }
-    downloadCSV(rows, name);
-    setDlStatus(`Selesai: ${fmt(rows.length, 0)} baris, ${localStamp(rows[0].t)} sampai ${localStamp(rows[rows.length - 1].t)}.${warn}`, warn ? "error" : "ok");
+    const { rows, headers, warn } = await fetchRange(start, end);
+    if (!rows.length) { setDlStatus("Tidak ada data pada rentang ini.", "error"); return; }
+    const tOf = (r) => headers ? r[0] : r.t;
+    if (headers) downloadFullCSV(headers, rows, name); else downloadCSV(rows, name);
+    const cols = headers ? `, ${headers.length + 1} kolom` : "";
+    setDlStatus(`Selesai: ${fmt(rows.length, 0)} baris${cols}, ${localStamp(tOf(rows[0]))} sampai ${localStamp(tOf(rows[rows.length - 1]))}.${warn}`, warn ? "error" : "ok");
   } catch (e) {
     setDlStatus(`Unduhan gagal. ${e.message}`, "error");
   } finally {
@@ -1369,16 +1409,12 @@ $("dlAll").addEventListener("click", () => {
   downloadFromSheet(null, null, `respirometer_semua-data_${fileStamp(Date.now())}.csv`);
 });
 $("dlView").addEventListener("click", () => {
-  if (!state.rows.length) { setDlStatus("Tidak ada data pada rentang tampilan.", "error"); return; }
-  downloadCSV(state.rows, `respirometer_${fileStamp(state.rows[0].t)}_${fileStamp(state.rows[state.rows.length - 1].t)}.csv`);
-  setDlStatus(`Selesai: ${fmt(state.rows.length, 0)} baris dari rentang tampilan grafik.`, "ok");
+  const b = viewBounds();
+  downloadFromSheet(b.start, b.end, `respirometer_${fileStamp(b.start)}_${fileStamp(b.end)}.csv`);
 });
 $("dlSel").addEventListener("click", () => {
   if (!state.sel) return;
-  const rows = state.rows.filter((r) => r.t >= state.sel.start && r.t <= state.sel.end);
-  if (!rows.length) { setDlStatus("Tidak ada data pada rentang perhitungan.", "error"); return; }
-  downloadCSV(rows, `respirometer_pilihan_${fileStamp(state.sel.start)}_${fileStamp(state.sel.end)}.csv`);
-  setDlStatus(`Selesai: ${fmt(rows.length, 0)} baris dari rentang perhitungan respirasi.`, "ok");
+  downloadFromSheet(state.sel.start, state.sel.end, `respirometer_pilihan_${fileStamp(state.sel.start)}_${fileStamp(state.sel.end)}.csv`);
 });
 // ================= Tema =================
 const THEME_KEY = "respirometer.theme";
