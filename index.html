@@ -113,7 +113,7 @@ button, input { font: inherit; color: inherit; }
 .banner code { font-size: 0.9em; }
 
 /* Readouts: the legend for every chart */
-.readouts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; margin-bottom: 16px; }
+.readouts { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; margin-bottom: 16px; }
 .readout { padding: 14px 18px 16px; border-left: 1px solid var(--line); }
 .readout:first-child { border-left: 0; }
 .readout .name { display: flex; align-items: center; gap: 8px; color: var(--muted); font-weight: 600; }
@@ -276,6 +276,7 @@ table.data tbody tr:hover { background: var(--bg); }
     <div class="readout" style="--c: var(--o2)"><div class="name">O₂</div><div class="value num"><span id="vO2">—</span><span class="unit">%</span></div></div>
     <div class="readout" style="--c: var(--temp)"><div class="name">Suhu</div><div class="value num"><span id="vTemp">—</span><span class="unit">°C</span></div></div>
     <div class="readout" style="--c: var(--rh)"><div class="name">Kelembapan</div><div class="value num"><span id="vRh">—</span><span class="unit">%RH</span></div></div>
+    <div class="readout" style="--c: var(--accent)"><div class="name">Tekanan</div><div class="value num"><span id="vPressure">—</span><span class="unit">kPa</span></div></div>
     <p class="readouts-foot" id="lastTime">Pembacaan terakhir: belum ada</p>
   </section>
 
@@ -405,7 +406,7 @@ table.data tbody tr:hover { background: var(--bg); }
       <p class="note" id="tableNote" style="margin-bottom:8px"></p>
       <div class="table-scroll">
         <table class="data">
-          <thead><tr><th scope="col">Waktu</th><th scope="col">CO₂ (ppm)</th><th scope="col">O₂ (%)</th><th scope="col">Suhu (°C)</th><th scope="col">RH (%)</th><th scope="col">Label</th></tr></thead>
+          <thead><tr><th scope="col">Waktu</th><th scope="col">CO₂ (ppm)</th><th scope="col">O₂ (%)</th><th scope="col">Suhu (°C)</th><th scope="col">RH (%)</th><th scope="col">Tekanan (kPa)</th><th scope="col">Label</th></tr></thead>
           <tbody id="tableBody"></tbody>
         </table>
       </div>
@@ -492,7 +493,7 @@ function durText(ms) {
 
 // ================= Data API =================
 function toRows(raw) {
-  return (raw || []).map((r) => ({ t: r[0], co2: r[1], o2: r[2], temp: r[3], rh: r[4] }));
+  return (raw || []).map((r) => ({ t: r[0], co2: r[1], o2: r[2], temp: r[3], rh: r[4], pressure: r[5] }));
 }
 
 async function api(params) {
@@ -626,7 +627,7 @@ function demoPoint(t) {
     o2 = 20.9 - 0.27 * k * hrs + 0.02 * noise(t, 2);
     rh = Math.min(96, 76 + 19 * (1 - Math.exp(-hrs / 0.6))) + 0.3 * noise(t, 4);
   }
-  return { t, co2: Math.round(co2 / 10) * 10, o2: Math.round(o2 * 100) / 100, temp: Math.round(temp * 100) / 100, rh: Math.round(rh * 100) / 100 };
+  return { t, co2: Math.round(co2 / 10) * 10, o2: Math.round(o2 * 100) / 100, temp: Math.round(temp * 100) / 100, rh: Math.round(rh * 100) / 100, pressure: 101.325 + 0.015 * noise(t, 5) };
 }
 function demoExtend() {
   const step = 15000;
@@ -703,7 +704,7 @@ function demoApi(p) {
       return new Promise((ok) => setTimeout(() => ok(out), 150));
     }
   }
-  out.rows = rows.map((r) => [r.t, r.co2, r.o2, r.temp, r.rh]);
+  out.rows = rows.map((r) => [r.t, r.co2, r.o2, r.temp, r.rh, r.pressure]);
   return new Promise((ok) => setTimeout(() => ok(out), 150));
 }
 
@@ -1096,6 +1097,7 @@ function renderReadouts() {
   $("vO2").textContent = l ? fmt(l.o2, 2) : "—";
   $("vTemp").textContent = l ? fmt(l.temp, 1) : "—";
   $("vRh").textContent = l ? fmt(l.rh, 1) : "—";
+  $("vPressure").textContent = l ? fmt(l.pressure, 3) : "—";
   $("lastTime").textContent = l ? `Pembacaan terakhir: ${dfFull.format(l.t)}` : "Pembacaan terakhir: belum ada";
 }
 
@@ -1103,8 +1105,8 @@ function renderTable() {
   const rows = state.rows;
   const shown = rows.slice(-CONFIG.TABLE_ROWS).reverse();
   $("tableBody").innerHTML = shown.map((r) =>
-    `<tr><td>${localStamp(r.t)}</td><td>${fmt(r.co2, 0)}</td><td>${fmt(r.o2, 2)}</td><td>${fmt(r.temp, 2)}</td><td>${fmt(r.rh, 2)}</td><td>${esc(sessionAt(r.t)?.label || "")}</td></tr>`
-  ).join("") || '<tr><td colspan="6" class="empty">Tidak ada data pada rentang tampilan ini.</td></tr>';
+    `<tr><td>${localStamp(r.t)}</td><td>${fmt(r.co2, 0)}</td><td>${fmt(r.o2, 2)}</td><td>${fmt(r.temp, 2)}</td><td>${fmt(r.rh, 2)}</td><td>${fmt(r.pressure, 3)}</td><td>${esc(sessionAt(r.t)?.label || "")}</td></tr>`
+  ).join("") || '<tr><td colspan="7" class="empty">Tidak ada data pada rentang tampilan ini.</td></tr>';
   $("tableNote").textContent = rows.length > shown.length
     ? `Menampilkan ${fmt(shown.length, 0)} baris terbaru dari ${fmt(rows.length, 0)} baris yang dimuat. Unduh CSV untuk data lengkap.`
     : `${fmt(rows.length, 0)} baris dimuat.`;
@@ -1167,9 +1169,9 @@ function renderAll() {
 
 // ================= CSV =================
 function downloadCSV(rows, name) {
-  const lines = ["Waktu,CO2_ppm,O2_persen,Suhu_C,RH_persen,Label"];
+  const lines = ["Waktu,CO2_ppm,O2_persen,Suhu_C,RH_persen,Tekanan_kPa,Label"];
   const csvText = (v) => /[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
-  for (const r of rows) lines.push([localStamp(r.t), r.co2 ?? "", r.o2 ?? "", r.temp ?? "", r.rh ?? "", csvText(sessionAt(r.t)?.label || "")].join(","));
+  for (const r of rows) lines.push([localStamp(r.t), r.co2 ?? "", r.o2 ?? "", r.temp ?? "", r.rh ?? "", r.pressure ?? "", csvText(sessionAt(r.t)?.label || "")].join(","));
   const blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
