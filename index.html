@@ -1105,7 +1105,7 @@ function renderTable() {
   const rows = state.rows;
   const shown = rows.slice(-CONFIG.TABLE_ROWS).reverse();
   $("tableBody").innerHTML = shown.map((r) =>
-    `<tr><td>${localStamp(r.t)}</td><td>${fmt(r.co2, 0)}</td><td>${fmt(r.o2, 2)}</td><td>${fmt(r.temp, 2)}</td><td>${fmt(r.rh, 2)}</td><td>${fmt(r.pressure, 3)}</td><td>${esc(sessionAt(r.t)?.label || "")}</td></tr>`
+    `<tr><td>${localStamp(r.t)}</td><td>${fmt(r.co2, 0)}</td><td>${fmt(r.o2, 2)}</td><td>${fmt(r.temp, 2)}</td><td>${fmt(r.rh, 2)}</td><td>${fmt(r.pressure, 1)}</td><td>${esc(sessionAt(r.t)?.label || "")}</td></tr>`
   ).join("") || '<tr><td colspan="7" class="empty">Tidak ada data pada rentang tampilan ini.</td></tr>';
   $("tableNote").textContent = rows.length > shown.length
     ? `Menampilkan ${fmt(shown.length, 0)} baris terbaru dari ${fmt(rows.length, 0)} baris yang dimuat. Unduh CSV untuk data lengkap.`
