@@ -1097,7 +1097,7 @@ function renderReadouts() {
   $("vO2").textContent = l ? fmt(l.o2, 2) : "—";
   $("vTemp").textContent = l ? fmt(l.temp, 1) : "—";
   $("vRh").textContent = l ? fmt(l.rh, 1) : "—";
-  $("vPressure").textContent = l ? fmt(l.pressure, 3) : "—";
+  $("vPressure").textContent = l ? fmt(l.pressure, 1) : "—";
   $("lastTime").textContent = l ? `Pembacaan terakhir: ${dfFull.format(l.t)}` : "Pembacaan terakhir: belum ada";
 }
 
